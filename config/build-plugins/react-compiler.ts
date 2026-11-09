@@ -22,7 +22,7 @@ export function reactCompilerExcludedFiles(): string[] {
 }
 
 export function isReactCompilerEnabled(): boolean {
-  return process.env.ORCA_REACT_COMPILER !== '0'
+  return false
 }
 
 export const REACT_COMPILER_OPTIONS = { target: '19' } as const
