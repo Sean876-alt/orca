@@ -1,11 +1,6 @@
 import { resampleToRate } from './stt-audio-resample'
-import { replaceRetiredSpeechModelId } from './model-catalog'
+import type { CloudTranscriptionTarget } from './cloud-transcription-target'
 
-export const OPENAI_TRANSCRIPTION_MODEL_BY_ID: Record<string, string> = {
-  'openai-gpt-transcribe': 'gpt-transcribe'
-}
-
-export const OPENAI_TRANSCRIPTION_URL = 'https://api.openai.com/v1/audio/transcriptions'
 const CLOUD_TRANSCRIPTION_SAMPLE_RATE = 16000
 const MAX_CLOUD_AUDIO_SAMPLES = 10 * 60 * CLOUD_TRANSCRIPTION_SAMPLE_RATE
 // Room to answer plus the upload time of the WAV at 1 Mbit/s (125 bytes per ms).
@@ -19,17 +14,18 @@ export type OpenAiTranscriptionResponse = {
   }
 }
 
-export function sanitizeOpenAiTranscriptionErrorMessage(message: string): string {
+export function sanitizeOpenAiTranscriptionErrorMessage(message: string, apiKey = ''): string {
   if (/incorrect api key provided:/i.test(message)) {
     return 'Incorrect OpenAI API key provided.'
   }
 
-  const sanitized = message
+  // Other providers' keys have other shapes, so also redact the exact key sent (unless it's a placeholder like "x").
+  const sanitized = (apiKey.length >= 8 ? message.split(apiKey).join('[redacted]') : message)
     .replace(/\bsk-[A-Za-z0-9_-]+/g, '[redacted]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
     .trim()
 
-  return sanitized || 'OpenAI transcription request failed'
+  return sanitized || 'Transcription request failed'
 }
 
 function writePcm16Samples(view: DataView, samples: Float32Array, offset: number): void {
@@ -68,19 +64,18 @@ function encodePcm16Wav(chunks: Float32Array[], sampleRate: number): Buffer<Arra
   return buffer
 }
 
-export function readOpenAiErrorMessage(data: OpenAiTranscriptionResponse): string | undefined {
+export function readOpenAiErrorMessage(
+  data: OpenAiTranscriptionResponse,
+  apiKey = ''
+): string | undefined {
   return typeof data.error?.message === 'string'
-    ? sanitizeOpenAiTranscriptionErrorMessage(data.error.message)
+    ? sanitizeOpenAiTranscriptionErrorMessage(data.error.message, apiKey)
     : undefined
 }
 
-function parseOpenAiTranscriptionResponse(data: OpenAiTranscriptionResponse): string {
-  if (typeof data.text === 'string') {
-    return data.text.trim()
-  }
-  throw new Error(
-    readOpenAiErrorMessage(data) ?? 'OpenAI transcription response did not include text'
-  )
+// gpt-transcribe takes a list of expected languages in place of the singular field others use.
+function languageField(model: string): string {
+  return /^gpt-(live-)?transcribe/.test(model) ? 'languages[]' : 'language'
 }
 
 export class OpenAiTranscriptionSession {
@@ -89,8 +84,7 @@ export class OpenAiTranscriptionSession {
   private readonly abortController = new AbortController()
 
   constructor(
-    private readonly modelId: string,
-    private readonly readApiKey: () => string,
+    private readonly readTarget: () => CloudTranscriptionTarget,
     private readonly language?: string
   ) {}
 
@@ -118,21 +112,15 @@ export class OpenAiTranscriptionSession {
       return ''
     }
 
-    // Settings load already moves retired ids; this catches a caller still holding one.
-    const apiModel = OPENAI_TRANSCRIPTION_MODEL_BY_ID[replaceRetiredSpeechModelId(this.modelId)]
-    if (!apiModel) {
-      throw new Error(`Unknown OpenAI transcription model: ${this.modelId}`)
-    }
-
+    const target = this.readTarget()
     const chunks = this.chunks
     this.chunks = []
     const wav = encodePcm16Wav(chunks, CLOUD_TRANSCRIPTION_SAMPLE_RATE)
+    // No response_format: JSON is the default everywhere, and not every provider accepts the field.
     const form = new FormData()
-    // No response_format: JSON is the default, and gpt-transcribe documents no other.
-    form.append('model', apiModel)
+    form.append('model', target.model)
     if (this.language) {
-      // gpt-transcribe takes a list of expected languages in place of the singular `language`.
-      form.append('languages[]', this.language)
+      form.append(languageField(target.model), this.language)
     }
     // A named WAV blob satisfies multipart uploads without temporary files.
     form.append('file', new Blob([wav], { type: 'audio/wav' }), 'dictation.wav')
@@ -141,32 +129,37 @@ export class OpenAiTranscriptionSession {
       TRANSCRIPTION_RESPONSE_ALLOWANCE_MS + Math.ceil(wav.byteLength / UPLOAD_BYTES_PER_MS)
     )
     try {
-      return await this.upload(form, AbortSignal.any([this.abortController.signal, timeout]))
+      return await upload(target, form, AbortSignal.any([this.abortController.signal, timeout]))
     } catch (error) {
       if (timeout.aborted && !this.abortController.signal.aborted) {
-        throw new Error('OpenAI transcription timed out. Check your connection and try again.')
+        throw new Error(
+          `${target.label} transcription timed out. Check your connection and try again.`
+        )
       }
       throw error
     }
   }
+}
 
-  private async upload(form: FormData, signal: AbortSignal): Promise<string> {
-    const response = await fetch(OPENAI_TRANSCRIPTION_URL, {
-      method: 'POST',
-      signal,
-      headers: {
-        Authorization: `Bearer ${this.readApiKey()}`
-      },
-      body: form
-    })
+async function upload(
+  target: CloudTranscriptionTarget,
+  form: FormData,
+  signal: AbortSignal
+): Promise<string> {
+  const response = await fetch(target.url, {
+    method: 'POST',
+    signal,
+    headers: target.apiKey ? { Authorization: `Bearer ${target.apiKey}` } : {},
+    body: form
+  })
 
-    const data = (await response.json().catch(() => ({}))) as OpenAiTranscriptionResponse
-    if (!response.ok) {
-      throw new Error(
-        `OpenAI transcription failed: ${readOpenAiErrorMessage(data) ?? response.statusText}`
-      )
-    }
-
-    return parseOpenAiTranscriptionResponse(data)
+  const data = (await response.json().catch(() => ({}))) as OpenAiTranscriptionResponse
+  const error = readOpenAiErrorMessage(data, target.apiKey)
+  if (!response.ok) {
+    throw new Error(`${target.label} transcription failed: ${error ?? response.statusText}`)
   }
+  if (typeof data.text === 'string') {
+    return data.text.trim()
+  }
+  throw new Error(error ?? `${target.label} transcription response did not include text`)
 }

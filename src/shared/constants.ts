@@ -121,7 +121,6 @@ export function getDefaultVoiceSettings(): VoiceSettings {
     dictationLanguage: DICTATION_LANGUAGE_AUTO,
     dictationMode: 'toggle' as const,
     terminalConfirmBeforeInsert: false,
-    userModels: [],
     openAiApiKeyConfigured: false,
     microphoneDeviceId: null,
     microphoneDeviceLabel: null,

@@ -5,7 +5,7 @@ export type SpeechModelType =
   | 'senseVoice'
   | 'nemo-ctc'
   | 'openai'
-export type SpeechModelProvider = 'local' | 'openai'
+export type SpeechModelProvider = 'local' | 'openai' | 'openai-compatible'
 
 export type ModelingUnit = 'bpe' | 'cjkchar' | 'cjkchar+bpe'
 
@@ -34,6 +34,20 @@ export type SpeechModelManifest = {
   replacedBy?: string
   /** Codes the engine accepts (others crash or fail to load it); absent when it ignores the setting. */
   dictationLanguages?: readonly string[]
+}
+
+export type OpenAiCompatibleSpeechProvider = {
+  baseUrl: string
+  model: string
+  /** Empty for servers that take no key. */
+  apiKey: string
+}
+
+export type OpenAiCompatibleSpeechProviderSummary = Omit<
+  OpenAiCompatibleSpeechProvider,
+  'apiKey'
+> & {
+  hasApiKey: boolean
 }
 
 export type SpeechModelStatus = 'not-downloaded' | 'downloading' | 'extracting' | 'ready' | 'error'
@@ -66,13 +80,6 @@ export type SpeechErrorEvent = {
 
 export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping' | 'error'
 
-export type UserModelConfig = {
-  id: string
-  type: SpeechModelType
-  dir: string
-  sampleRate?: number
-}
-
 export type DictationMode = 'toggle' | 'hold'
 
 export type VoiceSettings = {
@@ -83,7 +90,6 @@ export type VoiceSettings = {
   dictationLanguage: string
   dictationMode: DictationMode
   terminalConfirmBeforeInsert: boolean
-  userModels: UserModelConfig[]
   openAiApiKeyConfigured: boolean
   /** null = system default input device */
   microphoneDeviceId: string | null
