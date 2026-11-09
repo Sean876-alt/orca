@@ -19,8 +19,8 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   forbidOnly: !!process.env.CI,
   retries: 0,
-  repeatEach: 40,
-  grep: /copy chord from one split toolbar arms grab only in that split/,
+  repeatEach: 12,
+  grep: /app menu paste ownership|browser host follows the theme|copy chord from one split toolbar arms grab only in that split/,
   reporter: 'list',
   use: {
     // Disable retries so CI retains the first failure’s reliable trace.
